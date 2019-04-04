@@ -30,6 +30,12 @@ CNN(h::Int,w::Int,c::Int,d::Int) = CNN(Conv(height=h,width=w,inout=c=>d,padding=
                                        Conv(height=h,width=w,inout=d=>d,padding=1,activation=ELU()),
                                        Dropout(0.18))
 
+# struct Stem <: Model
+#     layer::Linear
+# end
+# Stem(input=2048,output=512) = Stem(Linear(input=input,output=output))
+# (m::Stem)(x) = m.layer(x) # should be 512xBX100 
+
 struct mRNN  <: Model
     rnn::LSTM
 end
@@ -45,6 +51,8 @@ function (m::mRNN)(x;batchSizes=[1])
     return out.y, out.hidden
 end
 mRNN(input::Int,hidden::Int;o...) = mRNN(LSTM(input=input, hidden=hidden;o...))
+mRNN(input,hidden::Int;o...) = mRNN(LSTM(input=size(input,1), hidden=hidden;o...))
+
 
 struct QUnit  <: Model
     embed::Embed
@@ -87,10 +95,15 @@ function (m::QUnit)(x;batchSizes=[1],train=false)
     cws_3d =  reshape(m.linear(cws_2d),(d,B,Tmax))
     return q,cws_3d;
 end
-QUnit(vocab::Int,embed::Int,hidden::Int;bidir=true) = QUnit(Embed(input=vocab, output=embed; winit=rand),
-                                                            mRNN(embed,hidden;bidirectional=bidir),
-                                                            Linear(input=2hidden,output=hidden),
-                                                            Dropout(0.15), Dropout(0.08))
+
+KnetLayers.Embed(vocab::Int,embed::Int)   = Embed(input=vocab, output=embed; winit=rand)
+KnetLayers.Embed(vocab::Int,embed)        = Embed(embed)
+Base.size(l::KnetLayers.Multiply,x...) = size(l.weight,x...)
+
+QUnit(vocab::Int,embed,hidden::Int;bidir=true) = QUnit(Embed(vocab,embed),
+                                                       mRNN(embed,hidden;bidirectional=bidir),
+                                                       Linear(input=2hidden,output=hidden),
+                                                       Dropout(0.2), Dropout(0.08))
 
 function bs2ind(batchSizes)
     B = batchSizes[1]
@@ -209,15 +222,16 @@ struct Output <: Model
     l2::Linear
 end
 
-(m::Output)(q,mp) = m.l2(m.l1(cat(m.qe(q),mp;dims=1)))
+(m::Output)(q,mp) = m.l2(dropout(m.l1(cat(m.qe(q),mp;dims=1)),0.2))   
+
 
 Output(d::Int) = Output(Dense(input=2d,output=d,activation=ELU()),
                         Dense(input=2d,output=d,activation=ELU()),
-                        Linear(input=d,output=28))
+                        Linear(input=d,output=1845))
 
 struct MACNetwork <: Model
     resnet::ResNet
-    cnn::CNN
+    stem::Linear
     qunit::QUnit
     qindex::Linear
     mac::MAC
@@ -230,7 +244,7 @@ end
 function (M::MACNetwork)(qs,batchSizes,xS,xB,xP;answers=nothing,p=12,selfattn=false,gating=false,tap=nothing,allsteps=false)
     train         = answers!=nothing
     #STEM Processing
-    KBhw          = M.cnn(xS)
+    KBhw          = M.stem(xS)
     #Read Unit Precalculations
     d,B,N         = size(KBhw)
     KBhw_2d       = M.drop(reshape(KBhw,(d,B*N)))
@@ -242,7 +256,7 @@ function (M::MACNetwork)(qs,batchSizes,xS,xB,xP;answers=nothing,p=12,selfattn=fa
     q,cws         = M.qunit(qs;batchSizes=batchSizes,train=train)
     qi_c          = M.qindex(q)
     #Memory Initialization
-    ci            = M.c0*xB
+    ci            = M.c0*q#M.c0*xB
     mi            = M.m0*xB
 
     if selfattn
@@ -282,20 +296,23 @@ function (M::MACNetwork)(qs,batchSizes,xS,xB,xP;answers=nothing,p=12,selfattn=fa
     end
 end
 
-function MACNetwork(o::Dict)
+function MACNetwork(o::Dict;embed=o[:embed_size])
            MACNetwork(ResNet(),
-                      CNN(3,3,1024,o[:d]),
-                      QUnit(o[:vocab_size],o[:embed_size],o[:d]),
+                      Linear(input=2048,output=o[:d]),
+                      QUnit(o[:vocab_size],embed,o[:d]),
                       Linear(input=2*o[:d],output=o[:p]*o[:d]),
                       MAC(o[:d];selfattn=o[:selfattn],gating=o[:gating]),
                       Output(o[:d]),
-                      param(o[:d],1;atype=arrtype, init=xavier),
+                      param(o[:d],2o[:d];atype=arrtype, init=xavier),
                       param(o[:d],1;atype=arrtype, init=randn),
                       Dropout(0.15))
 end
 
 setoptim!(m::MACNetwork,o) = 
     for param in params(m); param.opt = Adam(;lr=o[:lr]); end
+
+lrdecay!(M::MACNetwork, decay::Real) =
+    for p in params(M); p.opt.lr = p.opt.lr*decay; end
 
 function benchmark(M::MACNetwork,feats,o;N=10)
     getter(id) = view(feats,:,:,:,id)
@@ -317,18 +334,18 @@ function benchmark(feats,o;N=30)
 end
 
 
-const feats_L = 200704;
-const feats_H = 14;
-const feats_C = 1024;
+const feats_L = 204800;
+const feats_H = 2048;
+const feats_C = 100;
 function batcher1(feats,args)
     B = length(args)
     totlen = feats_L*B
-    result = similar(Array{Float32}, totlen)
+    result = Array{Float32}(undef, totlen)
     starts = (0:B-1) .*feats_L .+ 1; ends = starts .+ feats_L .- 1;
     for i=1:B
-        result[starts[i]:ends[i]] = view(feats,:,:,:,args[i])
+        result[starts[i]:ends[i]] = view(feats,:,:,args[i])
     end
-    return reshape(result,feats_H,feats_H,feats_C,B)
+    return permutedims(reshape(result,feats_H,feats_C,B),(1,3,2))
 end
 
 function inplace_batcher(result,data,args)

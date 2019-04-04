@@ -1,8 +1,10 @@
 using ImageMagick, Images
-using AutoGrad, Knet, KnetLayers, JSON, HDF5, Plots
+using AutoGrad, Knet, KnetLayers, JSON, HDF5#xs, Plots
 using Printf,Random
+using JLD2,FileIO
+import KnetLayers: IndexedDict
 
-include("model.jl")
+include("model2.jl"); println("Including model2.jl")
 savemodel(filename,m,mrun,o) = Knet.save(filename,"m",m,"mrun",mrun,"o",o)
 
 function loadmodel(filename;onlywrun=false)
@@ -16,52 +18,46 @@ function loadmodel(filename;onlywrun=false)
     return m,mrun,o;
 end
 
-function getQdata(dhome,set)
-    JSON.parsefile(dhome*set*".json")
+function getQdata(dhome,set; fname="objects")
+    JSON.parsefile(dhome*"gen_gqa_"*fname*"_"*set*"Instances.json")
 end
 
-function invert(vocab)
-       int2tok = Array{String}(undef,length(vocab))
-       for (k,v) in vocab; int2tok[v] = k; end
-       return int2tok
+
+function getDicts(dhome,dicfile;fname="objects")
+    dic  = JSON.parsefile(dhome*"vocab.json")
+    words  = IndexedDict(convert(Dict{String,Int},dic["word_dic"]))
+    answer = IndexedDict(convert(Dict{String,Int},dic["answer_dic"]))
+    id2index = JSON.parsefile(dhome*"gqa_$(fname)_merged_info.json")
+    return words,answer,id2index
 end
 
-function getDicts(dhome,dicfile)
-    dic  = JSON.parsefile(dhome*dicfile*".json")
-    qvoc = dic["word_dic"]
-    avoc = dic["answer_dic"]
-    i2w  = invert(qvoc)
-    i2a  = invert(avoc)
-    return qvoc,avoc,i2w,i2a
-end
-
-function loadFeatures(dhome,set;h5=false, featsize=(14,14,1024))
+function loadFeatures(dhome;h5=false, featsize=(2048,100), fname="objects")
     if h5
-        return h5open(dhome*set*".hdf5","r")["data"]
+        return h5open(dhome*"gqa_"*fname*".h5","r")["data"]
     else
-        feats = reinterpret(Float32,read(open(dhome*set*".bin")))
+        feats = reinterpret(Float32,read(open(dhome*"all_"*fname*".bin")))
         return reshape(feats,(featsize...,div(length(feats),prod(featsize))))
     end
 end
 
-function miniBatch(data;shfl=true,srtd=false,B=32)
+function miniBatch(data,q2i,a2i,id2index;shfl=true,srtd=false,B=32)
     L = length(data)
     shfl && shuffle!(data)
-    srtd && sort!(data;by=x->length(x[2]))
+    srtd && sort!(data;by=x->length(x["question"]))
     batchs = [];
     for i=1:B:L
         b         = min(L-i+1,B)
-        questions = Any[]
+        questions = Array{Int}[]
         answers   = zeros(Int,b)
-        images    = Any[]
+        images    = Int[]
         families  = zeros(Int,b)
 
         for j=1:b
             crw = data[i+j-1]
-            push!(questions,reverse(Array{Int}(crw[2])))
-            push!(images,parse(Int,crw[1][end-9:end-4])+1)
-            answers[j]  = crw[3]
-            families[j] = crw[4]
+            push!(questions,map(x->get(q2i,x,"<UNK>"),Iterators.reverse(crw["question"])))
+            push!(images,Int(id2index[crw["imageId"]["id"]]["index"]))
+            answers[j]  = get(a2i,crw["answer"],"<UNK>")
+            families[j] = 1 #parse(Int,Base.hash(crw["type"]))
         end
 
         lngths     = length.(questions);
@@ -107,15 +103,16 @@ end
 
 function loadTrainingData(dhome="data/";h5=false)
     !h5 && println("Loading pretrained features for train&val sets.
-                It requires minimum 70GB RAM!!!")
-    trnfeats = loadFeatures(dhome,"train";h5=h5)
-    valfeats = loadFeatures(dhome,"val";h5=h5)
+                It requires minimum 95GB RAM!!!")
+    feats = loadFeatures(dhome;h5=h5)
     println("Loading questions ...")
     trnqstns = getQdata(dhome,"train")
     valqstns = getQdata(dhome,"val")
     println("Loading dictionaries ... ")
-    qvoc,avoc,i2w,i2a = getDicts(dhome,"dic")
-    return (trnfeats,valfeats),(trnqstns,valqstns),(qvoc,avoc,i2w,i2a)
+    _,_,id2index = getDicts(dhome,"dic")
+    d = load(dhome*"wordembeddings_vocabs.jld2")
+    qvoc,avoc,embeddings = d["word_dict"],d["answer_dict"],d["embeddings"]
+    return feats,(trnqstns,valqstns),(qvoc,avoc,id2index),embeddings
 end
 
 function loadDemoData(dhome="data/demo/")
@@ -163,22 +160,30 @@ function modelrun(M,data,feats,o,Mrun=nothing;train=false)
         i % 1000 == 0 && println(@sprintf("%.2f Accuracy|Loss", train ? cnt/total : 100cnt/total))
     end
     train && savemodel(o[:prefix]*".jld2",M,Mrun,o);
+    return cnt/total
 end
 
 function train!(M,Mrun,sets,feats,o)
     @info "Training Starts...."
     setoptim!(M,o)
+    minloss = typemax(Float64)
     for i=1:o[:epochs]
         println("Epoch $(i) starts...")
-        modelrun(M,sets[1],feats[1],o,Mrun;train=true)
-        modelrun(Mrun,sets[2],feats[2],o;train=false)
+        trnloss = modelrun(M,sets[1],feats,o,Mrun;train=true)
+        if trnloss > minloss
+            println("learning decay")
+            lrdecay!(M,0.5)
+        else
+            minloss = trnloss
+        end
+        modelrun(Mrun,sets[2],feats,o;train=false)
     end
     return M,Mrun;
 end
 
-function train(sets,feats,o)
+function train(sets,feats,o;embed=300)
      if o[:mfile]==nothing
-         M    = MACNetwork(o);
+         M    = MACNetwork(o;embed=embed)
          Mrun = deepcopy(M)
      else
          M,Mrun,o = loadmodel(o[:mfile])
@@ -189,38 +194,38 @@ end
 
 function train(dhome="data/",o=nothing)
      if o==nothing
-         o=Dict(:h5=>false,:mfile=>nothing,:epochs=>10,
-                :lr=>0.0001,:p=>12,:ema=>0.999f0,:batchsize=>32,
+         o=Dict(:h5=>false,:mfile=>nothing,:epochs=>25,
+                :lr=>0.0001,:p=>4,:ema=>0.999f0,:batchsize=>64,
                 :selfattn=>false,:gating=>false,:d=>512,
                 :shuffle=>true,:sorted=>false,:prefix=>string(now())[1:10],
-                :vocab_size=>90,:embed_size=>300, :dhome=>"data/", :loadresnet=>false)
+                :vocab_size=>2960,:embed_size=>300, :dhome=>"data/", :loadresnet=>false)
      end
-     feats,qdata,dics = loadTrainingData(dhome;h5=o[:h5])
+     feats,qdata,dics,embeddings = loadTrainingData(dhome;h5=o[:h5])
      sets = []
-     for q in qdata; push!(sets,miniBatch(q;shfle=o[:shuffle],srtd=o[:sorted])); end
+     for q in qdata; push!(sets,miniBatch(q,dics...;shfl=o[:shuffle],srtd=o[:sorted])); end
      qdata = nothing; #gc();
-     M,Mrun = train(sets,feats,o)
+     M,Mrun = train(sets,feats,o;embed=Param(arrtype(embeddings)))
      return M,Mrun,sets,feats,dics;
 end
 
-function validate(Mrun,valset,valfeats,o)
-     modelrun(Mrun,valset,valfeats,o;train=false)
+function validate(Mrun,valset,feats,o)
+     modelrun(Mrun,valset,feats,o;train=false)
 end
 
-function validate(mfile,valset,valfeats,o)
+function validate(mfile,valset,feats,o)
      _,Mrun,_ = loadmodel(mfile)
-     modelrun(Mrun,valset,valfeats;train=false)
+     modelrun(Mrun,valset,feats;train=false)
      return Mrun
 end
 
 function validate(mfile,dhome,o)
      _,Mrun,_,o   = loadmodel(mfile)
-     valfeats     = loadFeatures(dhome,"val")
+     feats        = loadFeatures(dhome)
      qdata        = getQdata(dhome,"val")
      dics         = getDicts(dhome,"dic")
-     valset       = miniBatch(qdata;shfle=o[:shuffle],srtd=o[:sorted])
-     modelrun(Mrun,valset,valfeats,o;train=false)
-     return Mrun,valset,valfeats
+     valset       = miniBatch(qdata,dics...;shfl=o[:shuffle],srtd=o[:sorted])
+     modelrun(Mrun,valset,feats,o;train=false)
+     return Mrun,valset,feats
 end
 
 function singlerun(Mrun,feat,question;p=12,selfattn=false,gating=false)
