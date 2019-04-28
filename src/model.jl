@@ -50,14 +50,14 @@ function (m::mRNN)(x;batchSizes=[1])
     end
     return out.y, out.hidden
 end
-mRNN(input::Int,hidden::Int;o...) = mRNN(LSTM(input=input, hidden=hidden;o...))
-mRNN(input,hidden::Int;o...) = mRNN(LSTM(input=size(input,1), hidden=hidden;o...))
+mRNN(input::Int,hidden::Int;o...) = mRNN(LSTM(input=input, hidden=hidden÷2;o...))
+mRNN(input,hidden::Int;o...) = mRNN(LSTM(input=size(input,1), hidden=hidden÷2;o...))
 
 
 struct QUnit  <: Model
     embed::Embed
     rnn::mRNN
-    linear::Linear
+    #linear::Linear
     drop1::Dropout
     drop2::Dropout
 end
@@ -92,7 +92,7 @@ function (m::QUnit)(x;batchSizes=[1],train=false)
         Tmax   = size(y,3)
         cws_2d = reshape(y,2d,B*Tmax)
     end
-    cws_3d =  reshape(m.linear(cws_2d),(d,B,Tmax))
+    cws_3d =  reshape(cws_2d,(2d,B,Tmax))
     return q,cws_3d;
 end
 
@@ -102,7 +102,7 @@ Base.size(l::KnetLayers.Multiply,x...) = size(l.weight,x...)
 
 QUnit(vocab::Int,embed,hidden::Int;bidir=true) = QUnit(Embed(vocab,embed),
                                                        mRNN(embed,hidden;bidirectional=bidir),
-                                                       Linear(input=2hidden,output=hidden),
+                                                       #Linear(input=2hidden,output=hidden),
                                                        Dropout(0.2), Dropout(0.08))
 
 function bs2ind(batchSizes)
@@ -116,12 +116,12 @@ function bs2ind(batchSizes)
 end
 
 struct Control  <: Model
-    cq::Linear
+   # cq::Linear
     att::Linear
 end
 function (m::Control)(c,q,cws,pad;train=false,tap=nothing)
       d,B,T = size(cws)
-      cqi   = reshape(m.cq(vcat(c,q)),(d,B,1))
+      cqi   = q # reshape(m.cq(vcat(c,q)),(d,B,1))
       cvis  = reshape(cqi .* cws,(d,B*T))
       cvis_2d = reshape(m.att(cvis),(B,T)) #eq c2.1.2
       if pad != nothing
@@ -132,7 +132,7 @@ function (m::Control)(c,q,cws,pad;train=false,tap=nothing)
       tap!=nothing && get!(tap,"w_attn_$(tap["cnt"])",Array(reshape(cvi,B,T)))
       cnew = reshape(sum(cvi.*cws;dims=3),(d,B))
 end
-Control(d::Int) = Control(Linear(input=2d,output=d),Linear(input=d,output=1))
+Control(d::Int) = Control(Linear(input=d,output=1)) #cq::Linear(input=2d,output=d)
 
 struct Read  <: Model
     me::Linear
@@ -143,18 +143,20 @@ struct Read  <: Model
     drop::Dropout
 end
 
-function (m::Read)(mp,ci,cws,KBhw′,KBhw′′;train=false,tap=nothing)
-    d,B,N = size(KBhw′); BN = B*N
-    mi_3d = reshape(m.me(mp),(d,B,1))
+function (m::Read)(mp,ci,cws,KBhw, pad;train=false,tap=nothing)
+    d,B,N = size(KBhw); BN = B*N
+    mp    = dropout(mp,0.15)
+    mi_3d = reshape(m.me(dropout(mp,0.15)),(d,B,1))
+    KBhw′ = m.Kbe(dropout(KBhw,0.15))
     ImKB  = reshape(mi_3d .* KBhw′,(d,BN)) # eq r1.2
-    ImKB′ = reshape(elu.(m.Ime*ImKB .+ KBhw′′),(d,B,N)) #eq r2
+    ImKB′ = reshape(elu.(m.Ime*ImKB .+ m.Kbe2(reshape(KBhw′,(d,BN)))),(d,B,N)) #eq r2
     ci_3d = reshape(ci,(d,B,1))
     IcmKB_pre = elu.(reshape(ci_3d .* ImKB′,(d,BN))) #eq r3.1.1
     IcmKB_pre = m.drop(IcmKB_pre)
     IcmKB = reshape(m.att(IcmKB_pre),(B,N)) #eq r3.1.2
-    mvi = reshape(softmax(IcmKB,dims=2),(1,B,N)) #eq r3.2
+    mvi = reshape(softmax(IcmKB .- pad,dims=2),(1,B,N)) #eq r3.2
     tap!=nothing && get!(tap,"KB_attn_$(tap["cnt"])",Array(reshape(mvi,B,N)))
-    mnew = reshape(sum(mvi.*KBhw′;dims=3),(d,B)) #eq r3.3
+    mnew = reshape(sum(mvi.*KBhw;dims=3),(d,B)) #eq r3.3
 end
 Read(d::Int) = Read(Linear(input=d,output=d),Linear(input=d,output=d),
                     Linear(input=d,output=d),param(d,d; atype=arrtype, init=xavier),
@@ -170,9 +172,9 @@ end
 
 function (m::Write)(m_new,mi₋1,mj,ci,cj;train=false,selfattn=true,gating=true,tap=nothing)
     d,B        = size(m_new)
-    T          = length(mj)
     mi         = m.me(vcat(m_new,mi₋1))
     !selfattn && return mi
+    T          = length(mj)
     ciproj     = m.cproj(ci)
     ci_3d      = reshape(ciproj,d,B,1)
     cj_3d      = reshape(cat1d(cj...),(d,B,T)) #reshape(hcat(cj...),(d,B,T)) #
@@ -208,25 +210,29 @@ struct MAC <: Model
     read::Read
     write::Write
 end
-function (m::MAC)(qi,cws,mi,mj,ci,cj,KBhw′,KBhw′′,pad;train=false,selfattn=true,gating=true,tap=nothing)
+function (m::MAC)(qi,cws,mi,mj,ci,cj,KBhw,pad,opad;train=false,selfattn=true,gating=true,tap=nothing)
     cnew = m.control(ci,qi,cws,pad;train=train,tap=tap)
-    ri   = m.read(mi,ci,cws,KBhw′,KBhw′′;train=train,tap=tap)
-    mnew = m.write(ri,mi,mj,ci,cj;train=train,selfattn=selfattn,gating=gating)
+    ri   = m.read(mi,cnew,cws,KBhw,opad;train=train,tap=tap)
+    mnew = m.write(ri,mi,mj,cnew,cj;train=train,selfattn=selfattn,gating=gating)
     return cnew,mnew
 end
-MAC(d::Int;selfattn=false,gating=false) = MAC(Control(d),Read(d),Write(d))
+MAC(d::Int;selfattn=false,gating=false) = MAC(Control(d),Read(d),Write(d;selfattn=selfattn,gating=gating))
 
 struct Output <: Model
-    qe::Dense
+    qe::Linear
     l1::Dense
     l2::Linear
 end
 
-(m::Output)(q,mp) = m.l2(dropout(m.l1(cat(m.qe(q),mp;dims=1)),0.2))   
+function (m::Output)(q,mp)
+    eq = m.qe(q)
+    x  = dropout(cat(eq,mp,mp.*eq;dims=1),0.15)
+    return m.l2(dropout(m.l1(x),0.15))
+end
 
 
-Output(d::Int) = Output(Dense(input=2d,output=d,activation=ELU()),
-                        Dense(input=2d,output=d,activation=ELU()),
+Output(d::Int) = Output(Linear(input=d,output=d),
+                        Dense(input=3d,output=d,activation=ELU()),
                         Linear(input=d,output=1845))
 
 struct MACNetwork <: Model
@@ -236,27 +242,29 @@ struct MACNetwork <: Model
     qindex::Linear
     mac::MAC
     output::Output
-    c0
+    #c0
     m0
     drop::Dropout
 end
 
-function (M::MACNetwork)(qs,batchSizes,xS,xB,xP;answers=nothing,p=12,selfattn=false,gating=false,tap=nothing,allsteps=false)
+l2_normalize(x;dims=:) = x ./ sqrt.(max.(Knet.sumabs2(x, dims=dims),1e-12))
+
+function (M::MACNetwork)(qs,batchSizes,xS,xB,xP, opad;answers=nothing,p=12,selfattn=false,gating=false,tap=nothing,allsteps=false)
     train         = answers!=nothing
     #STEM Processing
-    KBhw          = M.stem(xS)
+    KBhw          = M.stem(l2_normalize(xS,dims=1))
     #Read Unit Precalculations
     d,B,N         = size(KBhw)
-    KBhw_2d       = M.drop(reshape(KBhw,(d,B*N)))
-    KBhw′_pre     = M.mac.read.Kbe(KBhw_2d) # look if it is necessary
-    KBhw′′        = M.mac.read.Kbe2(KBhw′_pre)
-    KBhw′         = reshape(KBhw′_pre,(d,B,N))
+    #KBhw_2d       = M.drop(reshape(KBhw,(dQ,B*N)))
+    #KBhw′_pre     = M.mac.read.Kbe(KBhw_2d) # look if it is necessary
+    #KBhw′′        = M.mac.read.Kbe2(KBhw′_pre)
+    #KBhw′         = reshape(KBhw′_pre,(d,B,N))
 
     #Question Unit
     q,cws         = M.qunit(qs;batchSizes=batchSizes,train=train)
     qi_c          = M.qindex(q)
     #Memory Initialization
-    ci            = M.c0*q#M.c0*xB
+    ci            = q#M.c0*xB
     mi            = M.m0*xB
 
     if selfattn
@@ -266,10 +274,10 @@ function (M::MACNetwork)(qs,batchSizes,xS,xB,xP;answers=nothing,p=12,selfattn=fa
     end
 
     for i=1:p
-        qi        = qi_c[(i-1)*d+1:i*d,:]
-        ci = M.drop(ci);
-        mi = M.drop(mi);
-        ci,mi = M.mac(qi,cws,mi,mj,ci,cj,KBhw′,KBhw′′,xP;train=train,selfattn=selfattn,gating=gating,tap=tap)
+        qi = qi_c[(i-1)*d+1:i*d,:]
+        #ci = M.drop(ci)
+        ci,mi = M.mac(qi,cws,mi,mj,ci,cj,KBhw,xP,opad;train=train,selfattn=selfattn,gating=gating,tap=tap)
+	#mi = M.drop(mi)
         if selfattn; push!(cj,ci); push!(mj,mi); end
         tap!=nothing && (tap["cnt"]+=1)
     end
@@ -278,6 +286,7 @@ function (M::MACNetwork)(qs,batchSizes,xS,xB,xP;answers=nothing,p=12,selfattn=fa
 
     if answers==nothing
         predmat = convert(Array{Float32},y)
+        predmat[2,:] .-= 1.0f30 #not predict unk:2
         tap!=nothing && get!(tap,"y",predmat)
         predictions = mapslices(argmax,predmat,dims=1)[1,:]
         if allsteps
@@ -300,10 +309,10 @@ function MACNetwork(o::Dict;embed=o[:embed_size])
            MACNetwork(ResNet(),
                       Linear(input=2048,output=o[:d]),
                       QUnit(o[:vocab_size],embed,o[:d]),
-                      Linear(input=2*o[:d],output=o[:p]*o[:d]),
+                      Linear(input=o[:d],output=o[:p]*o[:d]),
                       MAC(o[:d];selfattn=o[:selfattn],gating=o[:gating]),
                       Output(o[:d]),
-                      param(o[:d],2o[:d];atype=arrtype, init=xavier),
+                      #param(o[:d],2o[:d];atype=arrtype, init=xavier),
                       param(o[:d],1;atype=arrtype, init=randn),
                       Dropout(0.15))
 end
@@ -352,8 +361,19 @@ function inplace_batcher(result,data,args)
      B = length(args)
      totlen = feats_L*B
      starts = (0:B-1) .* feats_L .+ 1; ends = starts .+ feats_L .- 1;
-     for i=1:B
+     for i=1:B       
           result[starts[i]:ends[i]] = view(data,:,:,:,args[i])
      end
      return reshape(result,feats_H,feats_H,feats_C,B)
+end
+
+sigm_loss(x,z) = relu.(x) .- x .* z - log.(sigm.(abs.(x)))
+
+function sloss(y,a::AbstractArray{<:Integer})
+    indices = Knet.findindices(y,a,dims=1)
+    labels = zeros(Float32,size(y))
+    labels[indices] .= 1.0f0
+    z = arrtype(labels)
+    lp = sum(sigm_loss(y,z),dims=:)
+    return lp/length(a)
 end

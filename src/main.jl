@@ -4,7 +4,7 @@ using Printf,Random
 using JLD2,FileIO
 import KnetLayers: IndexedDict
 
-include("model2.jl"); println("Including model2.jl")
+include("model.jl"); println("Including model.jl")
 savemodel(filename,m,mrun,o) = Knet.save(filename,"m",m,"mrun",mrun,"o",o)
 
 function loadmodel(filename;onlywrun=false)
@@ -50,14 +50,15 @@ function miniBatch(data,q2i,a2i,id2index;shfl=true,srtd=false,B=32)
         questions = Array{Int}[]
         answers   = zeros(Int,b)
         images    = Int[]
-        families  = zeros(Int,b)
-
+        families  =zeros(Int,b)
+        objectsNums =zeros(Int,b)
         for j=1:b
             crw = data[i+j-1]
             push!(questions,map(x->get(q2i,x,"<UNK>"),Iterators.reverse(crw["question"])))
             push!(images,Int(id2index[crw["imageId"]["id"]]["index"]))
             answers[j]  = get(a2i,crw["answer"],"<UNK>")
             families[j] = 1 #parse(Int,Base.hash(crw["type"]))
+            objectsNums[j] = Int(crw["objectsNum"])
         end
 
         lngths     = length.(questions);
@@ -69,18 +70,22 @@ function miniBatch(data,q2i,a2i,id2index;shfl=true,srtd=false,B=32)
         answers    = answers[srtindices]
         images     = images[srtindices]
         families   = families[srtindices]
-
+        objectsNums = objectsNums[srtindices]
+        
         qs = Int[];
         batchSizes = Int[];
         pads = falses(b,Tmax)
+        object_pads = falses(b,100)
 
         for k=1:b
-           pads[k,lngths[k]+1:Tmax].=true
+            pads[k,lngths[k]+1:Tmax] .= true
+            object_pads[k,objectsNums[k]+1:100] .= true
         end
 
         if sum(pads)==0
            pads=nothing
         end
+       
 
         while true
             batch = 0
@@ -96,7 +101,7 @@ function miniBatch(data,q2i,a2i,id2index;shfl=true,srtd=false,B=32)
                 break;
             end
         end
-        push!(batchs,(images,qs,answers,batchSizes,pads,families))
+        push!(batchs,(images,qs,answers,batchSizes,pads,families, object_pads))
     end
     return batchs
 end
@@ -132,28 +137,27 @@ function modelrun(M,data,feats,o,Mrun=nothing;train=false)
     Rparams   = Mrun !== nothing ? params(Mrun) : nothing
     # results   = similar(Array{Float32},200704*48) #uncomment for INPLACE
     println("Timer Starts");
-    for i in progress(1:L)
-        ids,questions,answers,batchSizes,pad,families = data[i]
+    for i in progress(randperm(L))
+        ids,questions,answers,batchSizes,pad,families,o_pad = data[i]
         B    = batchSizes[1]
         xB   = arrtype(ones(Float32,1,B))
         #x    = inplace_batcher(results,feats,ids) #uncomment for INPLACE
         x    = batcher1(feats,ids) #comment for INPLACE
         xS   = arrtype(x)
         #xS   = arrtype(reshape(cat1d(map(getter,ids)...),14,14,1024,B))
-        xP   = pad==nothing ? nothing : arrtype(pad*Float32(1e22))
+        xP       = pad==nothing ? nothing : arrtype(pad*Float32(1e22))
+        object_P = arrtype(o_pad*Float32(1e22))
         if train
-            J = @diff M(questions,batchSizes,xS,xB,xP;answers=answers,p=o[:p],selfattn=o[:selfattn],gating=o[:gating])
+            J = @diff M(questions,batchSizes,xS,xB,xP,object_P;answers=answers,p=o[:p],selfattn=o[:selfattn],gating=o[:gating])
             cnt += value(J)*B; total += B;
-            for w in Mparams
-                update!(w.value,grad(J,w),w.opt)
-            end
+            update_with_gclip(J,Mparams;clip=8.0f0)
             if Mrun != nothing
                 for (wr,wi) in zip(Rparams,Mparams);
                     Knet.axpy!(1.0f0-o[:ema],wi.value-wr.value,wr.value);
                 end
             end
         else
-            preds  = M(questions,batchSizes,xS,xB,xP;p=o[:p],selfattn=o[:selfattn],gating=o[:gating])
+            preds  = M(questions,batchSizes,xS,xB,xP,object_P;p=o[:p],selfattn=o[:selfattn],gating=o[:gating])
             cnt   += sum(preds.==answers)
             total += B
         end
@@ -176,7 +180,9 @@ function train!(M,Mrun,sets,feats,o)
         else
             minloss = trnloss
         end
-        modelrun(Mrun,sets[2],feats,o;train=false)
+        for k=2:length(sets)
+            modelrun(Mrun,sets[k],feats,o;train=false)
+        end
     end
     return M,Mrun;
 end
@@ -262,4 +268,22 @@ end
 
 function scalepixel(pixel,scaler)
      return HSV(pixel.h,pixel.s,min(1.0,pixel.v+5*scaler))
+end
+
+function update_with_gclip(J,ws; clip=8.0f0)
+    gnorm=0.0f0
+    for w in ws
+        gnorm += Knet.norm(grad(J,w))^2
+    end
+    gnorm = sqrt(gnorm)
+    if gnorm > clip
+        for w in ws
+            g = Knet.lmul!(clip/gnorm, grad(J,w))
+            update!(w.value,g,w.opt)
+        end
+    else
+        for w in ws
+             update!(w.value,grad(J,w),w.opt)
+        end
+    end
 end

@@ -1,4 +1,4 @@
-initEmbRandom(embDim,InputDim) =  2rand(Float32,embDim,InputDim) .- 1.0f0
+initEmbRandom(embDim,InputDim) =  randn(Float32,embDim,InputDim)
 
 function sentenceEmb(sentence, wordVectors, dim)
     words = split(sentence)
