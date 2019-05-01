@@ -138,7 +138,7 @@ function (m::Control)(c, q, cws, mask; tap=nothing)
     if mask === nothing
         cvi = reshape(softmax(cvis_2d, dims=2),(1,B,T)) #eq c2.2
     else
-        cvi = reshape(softmax(cvis_2d .+ mask,dims=2),(1,B,T)) #eq c2.2
+        cvi = reshape(softmax(cvis_2d .- mask,dims=2),(1,B,T)) #eq c2.2
     end
     tap===nothing || get!(tap,"w_attn_$(tap["cnt"])",Array(reshape(cvi,B,T)))
     cnew = reshape(sum(cvi.*cws;dims=3),(d,B))
@@ -174,7 +174,7 @@ function (m::Read)(mp,ci,cws,KBhw,mask; tap=nothing)
     if mask===nothing
         mvi = reshape(softmax(IcmKB,dims=2),(1,B,N)) #eq r3.2
     else
-        mvi = reshape(softmax(IcmKB .+ mask,dims=2),(1,B,N)) #eq r3.2
+        mvi = reshape(softmax(IcmKB .- mask,dims=2),(1,B,N)) #eq r3.2
     end
     tap===nothing || get!(tap,"KB_attn_$(tap["cnt"])",Array(reshape(mvi,B,N)))
     mnew = reshape(sum(mvi.*KBhw;dims=3),(d,B)) #eq r3.3
