@@ -6,7 +6,7 @@ if !isdir("data/GQA2/gqa_demo")
     rm("gqa_demo.tar.gz")
 end
 
-if !isfile("models/gqa2.jld2")
+if !isfile("models/gqaweights.jld2")
     println("Downloading pre-trained model from our servers...")
     download(server*"models/mac-network/gqaweights.jld2","models/gqaweights.jld2")
 end

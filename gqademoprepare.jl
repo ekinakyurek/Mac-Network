@@ -49,4 +49,4 @@ end
 
 
 getdemo(set="train")
-run(`tar -cvzf gqa.demo.tar.gz $(trgthome)`)
+run(`tar -cvzf gqa_demo.tar.gz $(trgthome)`)
