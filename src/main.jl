@@ -5,6 +5,8 @@ using JLD2,FileIO
 import KnetLayers: IndexedDict, arrtype, Activation, Filtering, Layer,
                   _batchSizes2indices, PadRNNOutput, one_hot, _pack_sequence
 include(KnetLayers.dir("examples/resnet.jl")) #load resnet functionalities
+using .ResNetLib
+
 include("model.jl")
 
 savemodel(filename,m,mrun,o) =
@@ -129,7 +131,9 @@ function ema_apply!(Mparams, Rparams, ema::Real)
 end
 
 function Base.copyto!(Mdest,Msource)
-    ema_apply!(params(Msource), params(Mdest), 0)
+    for (wr,wi) in zip(params(Mdest),params(Msource));
+        value(wr)[:] = value(wi)[:] 
+    end
     return Mdest
 end
 

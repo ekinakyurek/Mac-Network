@@ -8,7 +8,9 @@ version = "0.4.0"
 
 [[AutoGrad]]
 deps = ["Libdl", "LinearAlgebra", "Printf", "Random", "SpecialFunctions", "Statistics", "Test", "TimerOutputs"]
-path = "/home/gridsan/eakyurek/.julia/dev/AutoGrad"
+git-tree-sha1 = "491e98281164a85b20c8f1ae6f451f0b190652cc"
+repo-rev = "master"
+repo-url = "https://github.com/denizyuret/AutoGrad.jl.git"
 uuid = "6710c13c-97f1-543f-91c5-74e8f7d95b35"
 version = "1.1.3+"
 
@@ -34,10 +36,10 @@ uuid = "9e28174c-4ba2-5203-b857-d8d62c4213ee"
 version = "0.8.10"
 
 [[BinaryProvider]]
-deps = ["Libdl", "Pkg", "SHA", "Test"]
-git-tree-sha1 = "055eb2690182ebc31087859c3dd8598371d3ef9e"
+deps = ["Libdl", "SHA"]
+git-tree-sha1 = "c7361ce8a2129f20b0e05a89f7070820cfed6648"
 uuid = "b99e7846-7c00-51b0-8f62-c81ae34c0232"
-version = "0.5.3"
+version = "0.5.4"
 
 [[CSTParser]]
 deps = ["LibGit2", "Test", "Tokenize"]
@@ -70,10 +72,10 @@ uuid = "3da002f7-5984-5a60-b8a6-cbb66c0b333f"
 version = "0.7.5"
 
 [[ColorVectorSpace]]
-deps = ["ColorTypes", "Colors", "FixedPointNumbers", "LinearAlgebra", "SpecialFunctions", "Statistics", "StatsBase", "Test"]
-git-tree-sha1 = "a890f08e61b40e9843d7177206da61229a3603c8"
+deps = ["ColorTypes", "Colors", "FixedPointNumbers", "LinearAlgebra", "SpecialFunctions", "Statistics", "StatsBase"]
+git-tree-sha1 = "d626b542f9c3aa22b4f82fe3d36a0ff56fc58601"
 uuid = "c3611d14-8923-5661-9e6a-0046d554d3a4"
-version = "0.6.2"
+version = "0.7.0"
 
 [[Colors]]
 deps = ["ColorTypes", "FixedPointNumbers", "InteractiveUtils", "Printf", "Reexport", "Test"]
@@ -203,9 +205,9 @@ version = "0.8.2"
 
 [[ImageDistances]]
 deps = ["Colors", "Distances", "ProgressMeter"]
-git-tree-sha1 = "ee7dcd893cefe622251691896a4650dcf1ee2133"
+git-tree-sha1 = "8e071200b3162007ab7f46de849a9fba5acb9f7b"
 uuid = "51556ac3-7006-55f5-8cb3-34580c88182d"
-version = "0.2.0"
+version = "0.2.1"
 
 [[ImageFiltering]]
 deps = ["CatIndices", "ColorVectorSpace", "Colors", "ComputationalResources", "DataStructures", "FFTViews", "FFTW", "FixedPointNumbers", "ImageCore", "LinearAlgebra", "MappedArrays", "OffsetArrays", "Requires", "StaticArrays", "Statistics", "TiledIteration"]
@@ -238,10 +240,10 @@ uuid = "4e3cecfd-b093-5904-9786-8bbb286a6a31"
 version = "0.2.0"
 
 [[ImageTransformations]]
-deps = ["AxisAlgorithms", "ColorTypes", "ColorVectorSpace", "Colors", "CoordinateTransformations", "FixedPointNumbers", "IdentityRanges", "ImageCore", "Interpolations", "LinearAlgebra", "OffsetArrays", "StaticArrays", "Test"]
-git-tree-sha1 = "e32d38356febdd2ab2cca6a3d14b5e5ffcbfb74c"
+deps = ["AxisAlgorithms", "ColorTypes", "ColorVectorSpace", "Colors", "CoordinateTransformations", "FixedPointNumbers", "IdentityRanges", "ImageCore", "Interpolations", "OffsetArrays", "StaticArrays"]
+git-tree-sha1 = "4cf03fc72d8877d5e58c1c72d176340ad4e28fda"
 uuid = "02fcd773-0e25-5acc-982a-7f6622650795"
-version = "0.7.2"
+version = "0.8.0"
 
 [[Images]]
 deps = ["AxisArrays", "Base64", "ColorTypes", "ColorVectorSpace", "Colors", "FileIO", "FixedPointNumbers", "Graphics", "ImageAxes", "ImageCore", "ImageDistances", "ImageFiltering", "ImageMetadata", "ImageMorphology", "ImageShow", "ImageTransformations", "IndirectArrays", "MappedArrays", "OffsetArrays", "Reexport", "SparseArrays", "StaticArrays", "Statistics", "StatsBase", "TiledIteration"]
@@ -291,13 +293,17 @@ version = "0.20.0"
 
 [[Knet]]
 deps = ["AutoGrad", "CUDAapi", "FileIO", "JLD2", "Libdl", "LinearAlgebra", "Printf", "Random", "SpecialFunctions", "Statistics", "TimerOutputs"]
-path = "/home/gridsan/eakyurek/.julia/dev/Knet"
+git-tree-sha1 = "c91cf26b9ea2c833648396eb4811b7800df724b4"
+repo-rev = "master"
+repo-url = "https://github.com/denizyuret/Knet.jl.git"
 uuid = "1902f260-5fb4-5aff-8c31-6271790ab950"
 version = "1.2.1+"
 
 [[KnetLayers]]
 deps = ["AutoGrad", "CodecZlib", "Knet", "Statistics"]
-path = "/home/gridsan/eakyurek/.julia/dev/KnetLayers"
+git-tree-sha1 = "fc562c1214d8e8868c20d1c8bc37605841c3f412"
+repo-rev = "v0.2.0"
+repo-url = "https://github.com/ekinakyurek/KnetLayers.jl.git"
 uuid = "80bfaf46-ad8a-11e8-19eb-a135e382307b"
 version = "0.1.0"
 
