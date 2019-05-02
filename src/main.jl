@@ -129,7 +129,7 @@ function ema_apply!(Mparams, Rparams, ema::Real)
 end
 
 function Base.copyto!(Mdest,Msource)
-    ema_apply!(params(Msource), params(Mdest), 1)
+    ema_apply!(params(Msource), params(Mdest), 0)
     return Mdest
 end
 
