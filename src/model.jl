@@ -12,7 +12,7 @@ function (m::BiLSTM)(x;batchSizes=[1])
     if last(batchSizes) != B
         m.rnn(x;batchSizes=batchSizes,hy=true,cy=false)
     else
-        x   = reshape(x,size(x,1),B,div(size(x,2),B))
+        x = reshape(x,size(x,1),B,div(size(x,2),B))
         m.rnn(x;hy=true,cy=false)
     end
 end
@@ -106,9 +106,10 @@ function (m::QUnit)(x; batchSizes::Vector{Int}=[1], edrop::Real=0.2, qdrop::Real
     out = m.rnn(xe; batchSizes=batchSizes)
     q   = dropout(vcat(out.hidden[:,:,1], out.hidden[:,:,2]), qdrop)
     if last(batchSizes) != first(batchSizes) #padding
-        out = PadRNNOutput(out,_batchSizes2indices(batchSizes)) #add zero padding to rnn output
+        cws = PadRNNOutput(out.y,_batchSizes2indices(batchSizes)) #add zero padding to rnn output
+        return q,cws
     end
-    q, out.y
+    return q, out.y
 end
 
 QUnit(o, embedding::Integer) = 
@@ -138,7 +139,7 @@ function (m::Control)(c, q, cws, mask; tap=nothing)
     if mask === nothing
         cvi = reshape(softmax(cvis_2d, dims=2),(1,B,T)) #eq c2.2
     else
-        cvi = reshape(softmax(cvis_2d .- mask,dims=2),(1,B,T)) #eq c2.2
+        cvi = reshape(softmax(cvis_2d .+ mask,dims=2),(1,B,T)) #eq c2.2
     end
     tap===nothing || get!(tap,"w_attn_$(tap["cnt"])",Array(reshape(cvi,B,T)))
     cnew = reshape(sum(cvi.*cws;dims=3),(d,B))
@@ -174,7 +175,7 @@ function (m::Read)(mp,ci,cws,KBhw,mask; tap=nothing)
     if mask===nothing
         mvi = reshape(softmax(IcmKB,dims=2),(1,B,N)) #eq r3.2
     else
-        mvi = reshape(softmax(IcmKB .- mask,dims=2),(1,B,N)) #eq r3.2
+        mvi = reshape(softmax(IcmKB .+ mask,dims=2),(1,B,N)) #eq r3.2
     end
     tap===nothing || get!(tap,"KB_attn_$(tap["cnt"])",Array(reshape(mvi,B,N)))
     mnew = reshape(sum(mvi.*KBhw;dims=3),(d,B)) #eq r3.3
@@ -302,18 +303,18 @@ function (M::MACNetwork)(questions, batchSizes, feats,
     #feats = M.imgunit.feat(feats)
     
     # Feature Post Processing
-    KBhw = M.imgunit.post(l2_normalize(feats,dims=1)) #knowledge base
+    KBhw = M.imgunit(l2_normalize(feats,dims=1)) #knowledge base
 
     d,B,N  = size(KBhw) 
 
     # Question Unit
     q,cws = M.qunit(questions; batchSizes=batchSizes)
+    qis    = M.qindex(q)
     
     # Memory Initialization
-    ci,mi,c_history,m_history = init_state(M.mac,q)
+    ci,mi,c_history,m_history = init_state(M,q)
     
     # BODY: MAC Cells
-    qis    = M.qindex(q)
     for i=1:p
         qi = qis[(i-1)*d+1:i*d,:]
         ci, mi = M.mac(qi,cws,mi,m_history,ci,c_history,KBhw,cw_mask,kb_mask;tap=tap)
@@ -321,12 +322,13 @@ function (M::MACNetwork)(questions, batchSizes, feats,
             push!(c_history,ci);
             push!(m_history,mi);
         end
-        tap!=nothing && (tap["cnt"]+=1)
+        tap!==nothing && (tap["cnt"]+=1)
     end
     
     # Output Logits
     y = M.output(q,mi)
-    
+
+    tap!==nothing && (tap["y"]=value(y))
     if !train
         if allsteps && m_history !== nothing
             make_all_predictions(M, q, m_history, p)
@@ -350,9 +352,9 @@ function MACNetwork(o::Dict;embeddings=o[:embedSize])
                       )
 end
 
-function init_state(mac,q)
+function init_state(M,q)
     mi = M.m0*fill!(arrtype(undef,1,size(q,2)),one(eltype(arrtype)))
-    if mac.write.att !== nothing
+    if M.mac.write.att !== nothing
         cj=[q]; mj=[mi]
     else
         cj=nothing; mj=nothing
@@ -395,25 +397,23 @@ end
 ####
 output_size_of(::Type{<:ResNet})  = (14,14,1024)
 
-function PadRNNOutput(s::RNNOutput, indices)
-    d      = size(s.y,1)
+function PadRNNOutput(y, indices)
+    d      = size(y,1)
     B      = length(indices)
     lngths = length.(indices)
-    Tmax   = maximum(lngths)
-    z      = zero(eltype(arrtype))
+    Tmax   = first(lngths)
     cw = []
     @inbounds for i=1:B
-        y1 = s.y[:,indices[i]]
+        y1 = y[:,indices[i]]
         df = Tmax-lngths[i]
         if df > 0
-            pad = fill!(arrtype(undef,d*df), z)
-            ypad = reshape(cat1d(y1,pad),d,Tmax) # hcat(y1,kpad)
+            ypad = reshape(cat1d(y1,arrtype(undef,d*df)),d,Tmax) # hcat(y1,kpad)
             push!(cw,ypad)
         else
             push!(cw,y1)
         end
     end
-    out = RNNOutput(reshape(vcat(cw...),d,B,Tmax),s.hidden,s.memory,nothing)
+    return reshape(vcat(cw...),d,B,Tmax)
 end
 
 function maskQuestions(lengths::Vector{Int})
@@ -436,9 +436,8 @@ function maskObjects(objectnums, Omax::Int=100)
     return mask
 end
 
-function l2_normalize(x; dims=:)
-    x ./ sqrt.(max.(Knet.sumabs2(x, dims=dims),1e-12))
-end
+l2_normalize(x; dims=:) = x ./ sqrt.(max.(Knet.sumabs2(x, dims=dims),1e-12))
+
 
 
 #FIXME: Benchmarks

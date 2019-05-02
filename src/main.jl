@@ -35,7 +35,7 @@ end
 
 function loadFeatures(dhome;h5=false, featsize=(2048,100), fname="objects")
     if h5
-        h5open(dhome*"gqa_"*fname*".h5","r")["data"]
+        h5open(dhome*"gqa_"*fname*".h5","r")["features"]
     else
         feats = reinterpret(Float32,read(open(dhome*"all_"*fname*".bin")))
         reshape(feats,(featsize...,div(length(feats),prod(featsize))))
@@ -81,17 +81,19 @@ function loadTrainingData(dhome="data/";h5=false)
     return feats,(trnqstns,valqstns),(qvoc,avoc,id2index),embeddings
 end
 
-function loadDemoData(dhome="data/demo/")
+function loadDemoData(dhome="data/demo/",featsize=(2048,100))
     println("Loading demo features ...")
-    feats = loadFeatures(dhome,"demo")
+    feats = reinterpret(Float32,read(open(dhome*"demo.bin")))
+    feats = reshape(feats,(featsize...,div(length(feats),prod(featsize))))
     println("Loading demo questions ...")
-    qstns = getQdata(dhome,"demo")
+    qstns = JSON.parsefile(dhome*"demo.json")
     println("Loading dictionaries ...")
-    dics = getDicts(dhome,"dic")
+    d = KnetLayers.load(dhome*"dict.jld2")
+    dics = (d["word_dict"],d["answer_dict"])
     return feats,qstns,dics
 end
 
-exp_mask(mask, atype) = atype(mask*1.0f22)
+exp_mask(mask, atype) = atype(mask*-1.0f30)
 exp_mask(mask::Nothing, atype) = nothing
 
 function modelrun(M,data,feats,o,Mrun=nothing; train::Bool=false, interval::Int=1000)
@@ -110,7 +112,7 @@ function modelrun(M,data,feats,o,Mrun=nothing; train::Bool=false, interval::Int=
             cnt += value(J)*B
             Mrun===nothing || ema_apply!(Mp, MRp, ft(o[:ema]))
         else
-            preds = M(questions,batchSizes,xfeat,qmask,kbmask; p=o[:p])
+            preds = M(questions,batchSizes,ximg,qmask,kbmask; p=o[:p])
             cnt += sum(preds .== answers)
         end
         t%interval==0 && println(@sprintf("%.2f Accuracy|Loss", train ? cnt/total : 100cnt/total))
@@ -198,12 +200,12 @@ function validate(mfile,dhome,o)
      return Mrun,valset,feats
 end
 
-function singlerun(Mrun,feat,question;p=12,selfattn=false,gating=false)
-    results        = Dict{String,Any}("cnt"=>1)
-    batchSizes     = ones(Int,length(question))
-    xB             = arrtype(ones(Float32,1,1))
-    outputs = Mrun(question,batchSizes,feat,xB,nothing;tap=results,p=p,selfattn=selfattn,gating=gating,allsteps=true)
-    prediction = argmax(results["y"])
+function singlerun(Mrun,ximg,question;p=4,objectnum=100)
+    results    = Dict{String,Any}("cnt"=>1)
+    batchSizes = ones(Int,length(question))
+    kb_mask    = exp_mask(maskObjects([objectnum]),arrtype)
+    outputs = Mrun(question,batchSizes,ximg,nothing,kb_mask;tap=results,p=p,allsteps=true)
+    prediction = make_predictions(results["y"])
     return results,prediction,outputs
 end
 
