@@ -287,7 +287,7 @@ struct MACNetwork <: Layer
     mac::MAC
     output::Output
     m0
-    loss::SigmoidCrossEntropy
+    loss::SigmoidCrossEntropyLoss
 end
 
 function (M::MACNetwork)(questions, batchSizes, feats,
@@ -303,12 +303,13 @@ function (M::MACNetwork)(questions, batchSizes, feats,
     #feats = M.imgunit.feat(feats)
     
     # Feature Post Processing
+    # FIXME: L2 Norm should be inside of Image Unit!!!
     KBhw = M.imgunit(l2_normalize(feats,dims=1)) #knowledge base
 
     d,B,N  = size(KBhw) 
 
     # Question Unit
-    q,cws = M.qunit(questions; batchSizes=batchSizes)
+    q,cws  = M.qunit(questions; batchSizes=batchSizes)
     qis    = M.qindex(q)
     
     # Memory Initialization
@@ -348,12 +349,12 @@ function MACNetwork(o::Dict;embeddings=o[:embedSize])
                       MAC(o),
                       Output(o),
                       param(o[:d],1;atype=arrtype, init=randn),
-                      SigmoidCrossEntropy(dims=1)
+                      SigmoidCrossEntropyLoss(dims=1)
                       )
 end
 
 function init_state(M,q)
-    mi = M.m0*fill!(arrtype(undef,1,size(q,2)),one(eltype(arrtype)))
+    mi = M.m0*ones(arrtype,1,size(q,2))
     if M.mac.write.att !== nothing
         cj=[q]; mj=[mi]
     else
@@ -395,6 +396,8 @@ end
 ####
 ##### KnetLayers Additional Functionalities
 ####
+@inline Base.zeros(T::Type{<:KnetArray}, d::Int...) = fill!(T(undef,d...),zero(eltype(T)))
+@inline Base.ones(T::Type{<:KnetArray}, d::Int...) = fill!(T(undef,d...),one(eltype(T)))
 output_size_of(::Type{<:ResNet})  = (14,14,1024)
 
 function PadRNNOutput(y, indices)
@@ -407,7 +410,8 @@ function PadRNNOutput(y, indices)
         y1 = y[:,indices[i]]
         df = Tmax-lngths[i]
         if df > 0
-            ypad = reshape(cat1d(y1,arrtype(undef,d*df)),d,Tmax) # hcat(y1,kpad)
+            pad  = zeros(arrtype, d*df)
+            ypad = reshape(cat1d(y1,pad),d,Tmax) # hcat(y1,kpad)
             push!(cw,ypad)
         else
             push!(cw,y1)
@@ -415,7 +419,7 @@ function PadRNNOutput(y, indices)
     end
     return reshape(vcat(cw...),d,B,Tmax)
 end
-
+## FIXME: Similar to maskQuestions, so merge it
 function maskQuestions(lengths::Vector{Int})
     Tmax = first(lengths)
     Tmax == last(lengths) && return nothing
@@ -437,8 +441,6 @@ function maskObjects(objectnums, Omax::Int=100)
 end
 
 l2_normalize(x; dims=:) = x ./ sqrt.(max.(Knet.sumabs2(x, dims=dims),1e-12))
-
-
 
 #FIXME: Benchmarks
 function benchmark(M::MACNetwork,feats,o;N=10)

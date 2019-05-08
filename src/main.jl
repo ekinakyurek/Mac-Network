@@ -1,7 +1,6 @@
 using ImageMagick, Images
 using AutoGrad, Knet, KnetLayers, JSON, HDF5
-using Printf,Random
-using JLD2,FileIO
+using Printf, Random
 import KnetLayers: IndexedDict, arrtype, Activation, Filtering, Layer,
                   _batchSizes2indices, PadRNNOutput, one_hot, _pack_sequence
 include(KnetLayers.dir("examples/resnet.jl")) #load resnet functionalities
@@ -95,7 +94,7 @@ function loadDemoData(dhome="data/demo/",featsize=(2048,100))
     return feats,qstns,dics
 end
 
-exp_mask(mask, atype) = atype(mask*-1.0f30)
+exp_mask(mask, atype) = atype(mask*(-1.0f22))
 exp_mask(mask::Nothing, atype) = nothing
 
 function modelrun(M,data,feats,o,Mrun=nothing; train::Bool=false, interval::Int=1000)
